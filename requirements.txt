@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+pandas
+scikit-learn
+pycaret==3.3.2    # o la versión que usaste
