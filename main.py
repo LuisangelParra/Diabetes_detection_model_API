@@ -1,15 +1,16 @@
 from fastapi import FastAPI
-from pydantic import BaseModel, conint
+from pydantic import BaseModel, conint, confloat
 import pandas as pd
 from pycaret.classification import load_model
 
 # ——————————————
-# 1) Alias de tipos
-GenHlthType    = conint(ge=1, le=5)    # salud general 1–5
-MentHlthType   = conint(ge=0, le=30)   # días mala salud mental 0–30
-BinaryType     = conint(ge=0, le=1)    # binario 0 ó 1
-AgeType        = conint(ge=1, le=13)   # categorías de edad 1–13
-IncomeType     = conint(ge=1, le=8)    # escala de ingresos 1–8
+# 1) Alias de tipos actualizados
+GenHlthType    = conint(ge=1, le=5)    # 1–5
+MentHlthType   = conint(ge=0, le=30)   # 0–30
+BinaryType     = conint(ge=0, le=1)    # 0 or 1
+AgeGroupType   = conint(ge=1, le=13)   # 1–13
+EduType        = conint(ge=1, le=6)    # 1–6
+IncomeType     = conint(ge=1, le=11)   # 1–11
 
 # ——————————————
 # 2) Modelo de Pydantic
@@ -17,69 +18,54 @@ class Paciente(BaseModel):
     GenHlth: GenHlthType
     MentHlth: MentHlthType
     HighBP: BinaryType
-    DiffWalk: BinaryType
-    weight: float       # en kilogramos
-    height: float       # en centímetros
     HighChol: BinaryType
-    Age: AgeType
-    HeartDiseaseorAttack: BinaryType
-    PhysHlth: MentHlthType
+    Smoker: BinaryType
     Stroke: BinaryType
+    HeartDiseaseorAttack: BinaryType
     PhysActivity: BinaryType
     HvyAlcoholConsump: BinaryType
-    CholCheck: BinaryType
+    DiffWalk: BinaryType
+    PhysHlth: MentHlthType
+    AgeGroup: AgeGroupType
+    Education: EduType
     Income: IncomeType
-    Smoker: BinaryType
+    weight: confloat(gt=0)   # kg
+    height: confloat(gt=0)   # cm
 
 # ——————————————
 app = FastAPI(title="API Diabetes Tipo 2")
 
 # ——————————————
-# 3) Carga el pipeline+modelo exportado con save_model()
-model = load_model("modelos/lightgbm_model_sf")
+# 3) Carga el mejor modelo entrenado (SMOTE+Tomek + RandomForest)
+model = load_model("modelos/XGBClassifier_SMOTEENN")
 
-# Umbral para catalogar “Alta” vs “Baja” probabilidad
 RISK_THRESHOLD = 0.5
 
 @app.post("/predict")
 def predecir(p: Paciente):
-    # 4) Calcula IMC
+    # 4) Construye el dict y calcula BMI
     data = p.dict()
     weight = data.pop("weight")
     height = data.pop("height")
-    bmi = weight / ((height / 100) ** 2)
-    # 5) Categoría IMC
-    if bmi < 18.5:
-        cat = "Bajo peso"
-    elif bmi < 25:
-        cat = "Normal"
-    elif bmi < 30:
-        cat = "Sobrepeso"
-    else:
-        cat = "Obesidad"
-    # 6) Inserta BMI en los datos para el modelo
-    data["BMI"] = bmi
+    bmi = weight / ((height/100) ** 2)
+    data["BMI"] = round(bmi, 2)
 
-    # 7) Predicción
+    # 5) Prepara DF y predice
     df = pd.DataFrame([data])
+    # PyCaret model espera exactamente las columnas: cols_list + BMI
     y_pred = model.predict(df)[0]
     y_proba = model.predict_proba(df)[0]
 
-    # 8) Extrae la probabilidad de la clase “1”
-    classes = getattr(model, "classes_", None)
-    if classes is None and hasattr(model, "named_steps"):
-        final = list(model.named_steps.values())[-1]
-        classes = final.classes_
-    idx1 = list(classes).index(1) if 1 in classes else 1
+    # 6) Extrae probabilidad de la clase 1
+    classes = model.classes_
+    idx1 = list(classes).index(1)
     score = float(y_proba[idx1])
 
-    # 9) Nivel de riesgo
     riesgo = "Alta" if score >= RISK_THRESHOLD else "Baja"
 
     return {
-        "imc": round(bmi, 2),
-        "categoria_imc": cat,
+        "imc": data["BMI"],
         "riesgo_diabetes": riesgo,
-        "prediccion": int(y_pred),      # 0 = no diab, 1 = prediab/diab
-        "probabilidad": score
+        "prediccion": int(y_pred),      # 0=no,1=diabetes
+        "probabilidad": round(score, 4)
     }
